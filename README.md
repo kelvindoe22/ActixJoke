@@ -1,7 +1,7 @@
 # BAD JOKES API
 
 I rewrote the badjoke API in Rust with Actix web.  
-Nearly complete and is 10x faster than the Flask 
+Nearly complete and it is 10x faster than the Flask 
 
 
 # TERA

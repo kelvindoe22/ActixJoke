@@ -1,7 +1,7 @@
 mod lib;
 
 use actix_session::{CookieSession, Session};
-use actix_web::{error, get, post, web, App, HttpResponse, HttpServer, Responder, Result};
+use actix_web::{error, get, post, web, http::header::LOCATION, App, HttpResponse, HttpServer, Responder, Result};
 use futures::stream::StreamExt;
 use lib::{
     database,
@@ -25,7 +25,6 @@ async fn tie(
     data: web::Data<Arc<Mutex<Client>>>,
     mut payload: web::Payload,
 ) -> Result<HttpResponse> {
-    let mut client = data.lock().unwrap();
 
     let mut body = web::BytesMut::new();
     while let Some(chunk) = payload.next().await {
@@ -49,6 +48,8 @@ async fn tie(
     };
 
     info.sqli();
+
+    let mut client = data.lock().unwrap();
 
     match client.query(
         &*format!(
@@ -74,33 +75,56 @@ async fn tie(
 async fn welcome(data: web::Data<usize>) -> impl Responder {
     format!("should be one\nGot {}", data.get_ref())
 }
+#[get("/logout")]
+async fn logout(session: Session) -> impl Responder {
+    session.remove("id");
+    return HttpResponse::SeeOther()
+            .set_header(LOCATION, "/login")
+            .finish();
+    
+}
 
 #[get("/login")]
-async fn mygee(data: web::Data<Appdata>) -> impl Responder {
+async fn mygee(data: web::Data<Appdata>, session: Session) -> impl Responder {
+    if session.get::<bool>("id").unwrap().is_some(){
+        return HttpResponse::SeeOther()
+            .set_header(LOCATION, "/strongcount")
+            .finish();
+    }
     let ctx = Context::new();
     let rendered = data.tera.render("tinder.html", &ctx).unwrap();
     HttpResponse::Ok().body(rendered)
 }
 
-async fn admin(data: web::Form<Login>) -> impl Responder {
-    if data.pass == *"load from dotenv" {
-        "Make session now"
+async fn admin(data: web::Form<Login>, session: Session) -> impl Responder {
+    let pass = std::env::var("pass").unwrap();
+    
+    if data.pass == pass {
+        session.set("id",false).unwrap();
+        return HttpResponse::SeeOther()
+            .set_header(LOCATION, "/strongcount")
+            .finish();
     } else {
-        "Work on yourself jit"
+        return HttpResponse::SeeOther()
+            .set_header(LOCATION, "/login")
+            .finish();
     }
 }
 
-// testing
-async fn select(data: web::Data<usize>) -> impl Responder {
-    ""
-}
+
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
+    
+    dotenv::dotenv().ok();
+    let creds = std::env::var("creds").unwrap();
+    
+
+
     let tera = Tera::new(concat!(env!("CARGO_MANIFEST_DIR"), "/templates/**/*")).unwrap();
 
     let client = Client::connect(
-        "host=loadfrom.env user=loadfrm.env password=loadfrom.env dbname=badjokes",
+        &*creds,
         NoTls,
     )
     .expect("Wrong details");
@@ -109,6 +133,7 @@ async fn main() -> std::io::Result<()> {
 
     HttpServer::new(move || {
         App::new()
+            .wrap(CookieSession::signed(&[0;32]).secure(false))
             .data(Arc::clone(&new_mut))
             .service(hello)
             .data(Arc::strong_count(&new_mut))
@@ -118,6 +143,7 @@ async fn main() -> std::io::Result<()> {
             .data(Appdata { tera: tera.clone() })
             .service(mygee)
             .route("/login", web::post().to(admin))
+            .service(logout)
     })
     .bind("127.0.0.1:8080")?
     .run()

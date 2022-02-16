@@ -87,3 +87,10 @@ pub mod datamodels {
     }
 }
 
+#[test]
+fn de() {
+    dotenv::dotenv().ok();
+
+    let k = std::env::var("creds").unwrap();
+    println!("{k}");
+}

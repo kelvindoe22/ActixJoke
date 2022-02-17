@@ -1,11 +1,13 @@
 mod lib;
 
 use actix_session::{CookieSession, Session};
-use actix_web::{error, get, post, web, http::header::LOCATION, App, HttpResponse, HttpServer, Responder, Result};
+use actix_web::{
+    error, get, http::header::LOCATION, post, web, App, HttpResponse, HttpServer, Responder, Result,
+};
 use futures::stream::StreamExt;
 use lib::{
     database,
-    datamodels::{Appdata, Joke, Login, Status},
+    datamodels::{Appdata, Appdataplus, Joke, Login, Status},
 };
 use postgres::{Client, NoTls};
 use std::sync::{Arc, Mutex};
@@ -15,7 +17,10 @@ const MAX_SIZE: usize = 262_144;
 
 #[get("/tellme")]
 async fn hello(data: web::Data<Arc<Mutex<Client>>>) -> impl Responder {
-    let mut client = data.lock().unwrap();
+    let mut client = match data.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
     let (joke, author) = database::query(&mut *client).unwrap();
     HttpResponse::Ok().json(Joke { joke, author })
 }
@@ -25,7 +30,6 @@ async fn tie(
     data: web::Data<Arc<Mutex<Client>>>,
     mut payload: web::Payload,
 ) -> Result<HttpResponse> {
-
     let mut body = web::BytesMut::new();
     while let Some(chunk) = payload.next().await {
         let chunk = chunk?;
@@ -49,7 +53,10 @@ async fn tie(
 
     info.sqli();
 
-    let mut client = data.lock().unwrap();
+    let mut client = match data.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
 
     match client.query(
         &*format!(
@@ -70,23 +77,36 @@ async fn tie(
     }
 }
 
-// test
-#[get("/strongcount")]
-async fn welcome(data: web::Data<usize>) -> impl Responder {
-    format!("should be one\nGot {}", data.get_ref())
+#[get("/approval")]
+async fn approval(data: web::Data<Appdataplus>, session: Session) -> impl Responder {
+    if session.get::<bool>("id").unwrap().is_some() {
+        let mut ctx = Context::new();
+        let mut client = match data.client.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let jokes = database::for_approval(&mut client);
+        ctx.insert("jokes", &jokes);
+        let rendered = data.tera.render("strongcount.html", &ctx).unwrap();
+        HttpResponse::Ok().body(rendered)
+    } else {
+        HttpResponse::SeeOther()
+            .set_header(LOCATION, "/login")
+            .finish()
+    }
 }
+
 #[get("/logout")]
 async fn logout(session: Session) -> impl Responder {
     session.remove("id");
     return HttpResponse::SeeOther()
-            .set_header(LOCATION, "/login")
-            .finish();
-    
+        .set_header(LOCATION, "/login")
+        .finish();
 }
 
 #[get("/login")]
 async fn mygee(data: web::Data<Appdata>, session: Session) -> impl Responder {
-    if session.get::<bool>("id").unwrap().is_some(){
+    if session.get::<bool>("id").unwrap().is_some() {
         return HttpResponse::SeeOther()
             .set_header(LOCATION, "/strongcount")
             .finish();
@@ -98,9 +118,9 @@ async fn mygee(data: web::Data<Appdata>, session: Session) -> impl Responder {
 
 async fn admin(data: web::Form<Login>, session: Session) -> impl Responder {
     let pass = std::env::var("pass").unwrap();
-    
+
     if data.pass == pass {
-        session.set("id",false).unwrap();
+        session.set("id", false).unwrap();
         return HttpResponse::SeeOther()
             .set_header(LOCATION, "/strongcount")
             .finish();
@@ -111,39 +131,106 @@ async fn admin(data: web::Form<Login>, session: Session) -> impl Responder {
     }
 }
 
+#[get("delete/{id}")]
+async fn delete(
+    path: web::Path<String>,
+    session: Session,
+    data: web::Data<Arc<Mutex<Client>>>,
+) -> impl Responder {
+    if session.get::<bool>("id").unwrap().is_some() {
+        let mut client = match data.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
 
+        client
+            .query(&*format!("DELETE FROM WAIT_LIST WHERE ID = {}", &path), &[])
+            .unwrap();
+        return HttpResponse::SeeOther()
+            .set_header(LOCATION, "/approval")
+            .finish();
+    } else {
+        return HttpResponse::SeeOther()
+            .set_header(LOCATION, "/login")
+            .finish();
+    }
+}
+#[get("accept/{id}")]
+async fn accept(
+    path: web::Path<String>,
+    session: Session,
+    data: web::Data<Arc<Mutex<Client>>>,
+) -> impl Responder {
+    if session.get::<bool>("id").unwrap().is_some() {
+        let mut joke = String::new();
+        let mut author = String::new();
+        let mut client = match data.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        for row in client
+            .query(
+                &*format!("SELECT joke,author FROM WAIT_LIST WHERE ID = {}", &path),
+                &[],
+            )
+            .unwrap()
+        {
+            joke = String::from(row.get::<_, &str>(0));
+            author = String::from(row.get::<_, &str>(1));
+        }
+        client
+            .query(
+                &*format!(
+                    "INSERT INTO bad_jokes(joke,author) VALUES('{}','{}')",
+                    joke, author
+                ),
+                &[],
+            )
+            .unwrap();
+        client
+            .query(&*format!("DELETE FROM WAIT_LIST WHERE ID = {}", &path), &[])
+            .unwrap();
+        return HttpResponse::SeeOther()
+            .set_header(LOCATION, "/approval")
+            .finish();
+    } else {
+        return HttpResponse::SeeOther()
+            .set_header(LOCATION, "/login")
+            .finish();
+    }
+}
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    
     dotenv::dotenv().ok();
     let creds = std::env::var("creds").unwrap();
-    
-
 
     let tera = Tera::new(concat!(env!("CARGO_MANIFEST_DIR"), "/templates/**/*")).unwrap();
 
-    let client = Client::connect(
-        &*creds,
-        NoTls,
-    )
-    .expect("Wrong details");
+    let client = Client::connect(&*creds, NoTls).expect("Wrong details");
 
     let new_mut = Arc::new(Mutex::new(client));
 
     HttpServer::new(move || {
         App::new()
-            .wrap(CookieSession::signed(&[0;32]).secure(false))
+            .wrap(CookieSession::signed(&[0; 32]).secure(false))
             .data(Arc::clone(&new_mut))
             .service(hello)
-            .data(Arc::strong_count(&new_mut))
-            .service(welcome)
             .data(Arc::clone(&new_mut))
             .service(tie)
             .data(Appdata { tera: tera.clone() })
             .service(mygee)
             .route("/login", web::post().to(admin))
             .service(logout)
+            .data(Appdataplus {
+                tera: tera.clone(),
+                client: Arc::clone(&new_mut),
+            })
+            .service(approval)
+            .data(Arc::clone(&new_mut))
+            .service(delete)
+            .data(Arc::clone(&new_mut))
+            .service(accept)
     })
     .bind("127.0.0.1:8080")?
     .run()

@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Strong Count</title>
+</head>
+<body>
+    {% for j in jokes %}
+    <div>
+        <textarea cols="50" rows="12">{{ j.joke }}</textarea>
+        <p>By {{j.author}}</p>
+        <br>
+        <a href="/accept/{{j.id}}">Yay</a>
+        <a href="/delete/{{j.id}}">Nay</a>
+        <a href="/edit/{{j.id}}">Edit</a>
+        <br>
+    </div>
+        <hr>
+    {% endfor %}
+</body>
+</html>

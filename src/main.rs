@@ -79,21 +79,26 @@ async fn tie(
 
 #[get("/approval")]
 async fn approval(data: web::Data<Appdataplus>, session: Session) -> impl Responder {
-    if session.get::<bool>("id").unwrap().is_some() {
-        let mut ctx = Context::new();
-        let mut client = match data.client.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        let jokes = database::for_approval(&mut client);
-        ctx.insert("jokes", &jokes);
-        let rendered = data.tera.render("strongcount.html", &ctx).unwrap();
-        HttpResponse::Ok().body(rendered)
-    } else {
-        HttpResponse::SeeOther()
-            .set_header(LOCATION, "/login")
-            .finish()
+    let secret = std::env::var("MY_CODE").unwrap();
+    match session.get::<String>("id").unwrap() {
+        Some(s) => {
+            if s == secret {
+                let mut ctx = Context::new();
+                let mut client = match data.client.lock() {
+                    Ok(guard) => guard,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                let jokes = database::for_approval(&mut client);
+                ctx.insert("jokes", &jokes);
+                let rendered = data.tera.render("strongcount.html", &ctx).unwrap();
+                return HttpResponse::Ok().body(rendered);
+            }
+        }
+        None => {}
     }
+    HttpResponse::SeeOther()
+        .set_header(LOCATION, "/login")
+        .finish()
 }
 
 #[get("/logout")]
@@ -106,10 +111,16 @@ async fn logout(session: Session) -> impl Responder {
 
 #[get("/login")]
 async fn mygee(data: web::Data<Appdata>, session: Session) -> impl Responder {
-    if session.get::<bool>("id").unwrap().is_some() {
-        return HttpResponse::SeeOther()
-            .set_header(LOCATION, "/strongcount")
-            .finish();
+    let secret = std::env::var("MY_CODE").unwrap();
+    match session.get::<String>("id").unwrap() {
+        Some(s) => {
+            if s == secret {
+                return HttpResponse::SeeOther()
+                    .set_header(LOCATION, "/approval")
+                    .finish();
+            }
+        }
+        None => {}
     }
     let ctx = Context::new();
     let rendered = data.tera.render("tinder.html", &ctx).unwrap();
@@ -117,12 +128,13 @@ async fn mygee(data: web::Data<Appdata>, session: Session) -> impl Responder {
 }
 
 async fn admin(data: web::Form<Login>, session: Session) -> impl Responder {
+    let secret = std::env::var("MY_CODE").unwrap();
     let pass = std::env::var("pass").unwrap();
 
     if data.pass == pass {
-        session.set("id", false).unwrap();
+        session.set("id", secret).unwrap();
         return HttpResponse::SeeOther()
-            .set_header(LOCATION, "/strongcount")
+            .set_header(LOCATION, "/approval")
             .finish();
     } else {
         return HttpResponse::SeeOther()
@@ -137,23 +149,29 @@ async fn delete(
     session: Session,
     data: web::Data<Arc<Mutex<Client>>>,
 ) -> impl Responder {
-    if session.get::<bool>("id").unwrap().is_some() {
-        let mut client = match data.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
+    let secret = std::env::var("MY_CODE").unwrap();
+    match session.get::<String>("id").unwrap() {
+        Some(s) => {
+            if s == secret {
+                let mut client = match data.lock() {
+                    Ok(guard) => guard,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
 
-        client
-            .query(&*format!("DELETE FROM WAIT_LIST WHERE ID = {}", &path), &[])
-            .unwrap();
-        return HttpResponse::SeeOther()
-            .set_header(LOCATION, "/approval")
-            .finish();
-    } else {
-        return HttpResponse::SeeOther()
-            .set_header(LOCATION, "/login")
-            .finish();
+                client
+                    .query(&*format!("DELETE FROM WAIT_LIST WHERE ID = {}", &path), &[])
+                    .unwrap();
+                return HttpResponse::SeeOther()
+                    .set_header(LOCATION, "/approval")
+                    .finish();
+            }
+        }
+        None => {}
     }
+
+    HttpResponse::SeeOther()
+        .set_header(LOCATION, "/login")
+        .finish()
 }
 #[get("accept/{id}")]
 async fn accept(
@@ -161,43 +179,48 @@ async fn accept(
     session: Session,
     data: web::Data<Arc<Mutex<Client>>>,
 ) -> impl Responder {
-    if session.get::<bool>("id").unwrap().is_some() {
-        let mut joke = String::new();
-        let mut author = String::new();
-        let mut client = match data.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        for row in client
-            .query(
-                &*format!("SELECT joke,author FROM WAIT_LIST WHERE ID = {}", &path),
-                &[],
-            )
-            .unwrap()
-        {
-            joke = String::from(row.get::<_, &str>(0));
-            author = String::from(row.get::<_, &str>(1));
+    let secret = std::env::var("MY_CODE").unwrap();
+    match session.get::<String>("id").unwrap() {
+        Some(s) => {
+            if s == secret {
+                let mut joke = String::new();
+                let mut author = String::new();
+                let mut client = match data.lock() {
+                    Ok(guard) => guard,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                for row in client
+                    .query(
+                        &*format!("SELECT joke,author FROM WAIT_LIST WHERE ID = {}", &path),
+                        &[],
+                    )
+                    .unwrap()
+                {
+                    joke = String::from(row.get::<_, &str>(0));
+                    author = String::from(row.get::<_, &str>(1));
+                }
+                client
+                    .query(
+                        &*format!(
+                            "INSERT INTO bad_jokes(joke,author) VALUES('{}','{}')",
+                            joke, author
+                        ),
+                        &[],
+                    )
+                    .unwrap();
+                client
+                    .query(&*format!("DELETE FROM WAIT_LIST WHERE ID = {}", &path), &[])
+                    .unwrap();
+                return HttpResponse::SeeOther()
+                    .set_header(LOCATION, "/approval")
+                    .finish();
+            }
         }
-        client
-            .query(
-                &*format!(
-                    "INSERT INTO bad_jokes(joke,author) VALUES('{}','{}')",
-                    joke, author
-                ),
-                &[],
-            )
-            .unwrap();
-        client
-            .query(&*format!("DELETE FROM WAIT_LIST WHERE ID = {}", &path), &[])
-            .unwrap();
-        return HttpResponse::SeeOther()
-            .set_header(LOCATION, "/approval")
-            .finish();
-    } else {
-        return HttpResponse::SeeOther()
-            .set_header(LOCATION, "/login")
-            .finish();
+        None => {}
     }
+    HttpResponse::SeeOther()
+        .set_header(LOCATION, "/login")
+        .finish()
 }
 
 #[actix_web::main]

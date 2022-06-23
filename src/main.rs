@@ -15,7 +15,7 @@ use tera::{Context, Tera};
 
 const MAX_SIZE: usize = 262_144;
 
-#[get("/tellme")]
+#[get("/")]
 async fn hello(data: web::Data<Arc<Mutex<Client>>>) -> impl Responder {
     let mut client = match data.lock() {
         Ok(guard) => guard,
@@ -25,7 +25,7 @@ async fn hello(data: web::Data<Arc<Mutex<Client>>>) -> impl Responder {
     HttpResponse::Ok().json(Joke { joke, author })
 }
 
-#[post("/letshearit")]
+#[post("/")]
 async fn tie(
     data: web::Data<Arc<Mutex<Client>>>,
     mut payload: web::Payload,
@@ -173,6 +173,9 @@ async fn delete(
         .set_header(LOCATION, "/login")
         .finish()
 }
+
+
+
 #[get("accept/{id}")]
 async fn accept(
     path: web::Path<String>,
